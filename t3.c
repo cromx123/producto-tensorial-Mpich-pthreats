@@ -1,10 +1,10 @@
 /***************************************************************************************
  * 
- * t2.c: producto tensorial calculado con mpi  
+ * t3.c: producto tensorial calculado con mpi y thread
  *
  * Programmer: Cristobal Gallardo Cubillos & Vicente Santos Varas
  *
- * Santiago de Chile, 7/11/2023
+ * Santiago de Chile, 7/12/2023
  *
  **************************************************************************************/
 
@@ -17,10 +17,20 @@
 #include <pthread.h>
 
 #define MASTER 0
+#define blockxthread 16
 MPI_Status status;
-    
-float **Matrix1, **Matrix2, **Resultado;
+float **Matrix1, **Matrix2, **Resultado, **Matrix1t, **Matrix2t;
+unsigned int num_threads, partition_type, rt, ct, rbt, cbt;
+/*
+ *
+ */
+struct data {
+    unsigned int id; 
+};
 
+/*
+ *
+ */
 void Usage(char *mess) {
 
     printf("\nUsage: mpirun -np k %s -P -O data.txt\n",mess);
@@ -28,7 +38,6 @@ void Usage(char *mess) {
     printf("P = {V: particion vertical, H: particion horizontal}\n");
     printf("O = {S: modo silencioso, V: modo vervoso}\n\n");
 }
-
 
 /*
  *
@@ -48,7 +57,6 @@ float **FillMatrix(unsigned int r, unsigned int c, FILE *archivo) {
     }
     return mat;
 }
-
 
 /*
  *
@@ -88,7 +96,11 @@ float **Process(float **x, float **y, unsigned int r, unsigned c,unsigned rb, un
     }
     return res;
 }
-void printMatrix1D(float *matrix, int m, int k){
+
+/*
+ *
+ */
+ void printMatrix1D(float *matrix, int m, int k){
     printf("Matriz aplanada:\n");
     int i;
     for ( i = 0; i < m * k; i = i + 1){
@@ -96,7 +108,11 @@ void printMatrix1D(float *matrix, int m, int k){
     }
     printf("\n");
 }
-void FreeMatrix(unsigned int r, float **mat) {
+
+/*
+ *
+ */
+void FreeMatrix(float **mat, unsigned int r) {
 
    unsigned int i;
    
@@ -104,6 +120,10 @@ void FreeMatrix(unsigned int r, float **mat) {
       free(mat[i]);
    free(mat);
 }
+
+/*
+ *
+ */
 float **GetSubMatrix(float **y, unsigned int start_row, unsigned int start_col, unsigned int end_row, unsigned int end_col) {
     float** x;
     unsigned int i, j;
@@ -118,6 +138,10 @@ float **GetSubMatrix(float **y, unsigned int start_row, unsigned int start_col, 
     }
     return x;
 }
+
+/*
+ *
+ */
 float* Matrix1D(float **matrix, int filas, int columnas){
     float *matriz_aplanada = (float*) malloc(filas * columnas * sizeof(float));
     int i, j, indice = 0;
@@ -130,29 +154,78 @@ float* Matrix1D(float **matrix, int filas, int columnas){
     }
     return matriz_aplanada;
 }
+
+/*
+ *
+ */
 float** Matrix2D(float* matriz_aplanada , int filas, int columnas){
     float** matrix = (float**) malloc(filas * sizeof(float*));
     for (int i = 0; i < filas; i = i + 1) {
     matrix[i] = (float*) malloc(columnas * sizeof(float));
     }
 
-    int indice=0, i, j;
+    int indice = 0, i, j;
     for (i = 0; i < filas; i = i + 1){
-        for ( j =0; j < columnas; j = j + 1){
+        for ( j = 0; j < columnas; j = j + 1){
             matrix[i][j]=matriz_aplanada[indice];
             indice = indice + 1;
         }
     }
     return matrix;
 }
+
+/*
+ *
+ */
+ void* tensorial_product(void* args) {
+    struct data *data = (struct data*)args;
+    int id = data->id;
+    unsigned int i, j, startRow, startCol, k, l;
+    
+   
+    if ( partition_type == 0) { // Partición horizontal
+        for(i = id; i < rt; i = i + num_threads){
+            for(j = 0; j < ct; j = j + 1){
+                startRow = i * rbt;
+                startCol = j * cbt;
+                for(k = 0; k < rbt; k = k + 1){
+                    for(l = 0; l < cbt; l = l + 1){
+                        Resultado[startRow + k][startCol + l] = Matrix1t[i][j] * Matrix2t[k][l];
+                    }
+                }
+            }
+        }
+        
+    } else if ( partition_type == 1) { // Partición vertical
+        for(j = id; j < ct; j = j + num_threads){
+            for(i = 0; i < rt; i = i + 1){
+                startRow = i * rbt;
+                startCol = j * cbt;
+                for(k = 0; k < rbt; k = k + 1){
+                    for(l = 0; l < cbt; l = l + 1){
+                        Resultado[startRow + k][startCol + l] = Matrix1t[i][j] * Matrix2t[k][l];
+                    }
+                }
+            }
+        }
+    }
+    
+    pthread_exit(NULL);
+}
+
+/*
+ *
+ */
 int main(int argc, char **argv) {
-    int m, i, k, n, start_row, end_row, start_col, end_col, p = 0, o = 0, rows_per_process, colum_per_process, extra_rows, extra_colum, rank, size, me, datos[7], rows_per_processb, extra_rowsb, end_rowb, start_rowb, colum_per_processb, extra_columb, start_colb, end_colb, sentmess = 0, recvmess = 0; 
+    int m, i, k, n, ii, start_row, end_row, start_col, end_col, p = 0, o = 0, rows_per_process, colum_per_process, extra_rows, extra_colum, rank, size, me, datos[8], rows_per_processb, extra_rowsb, end_rowb, start_rowb, colum_per_processb, extra_columb, start_colb, end_colb, sentmess = 0, recvmess = 0, j; 
     float* matrixA_1D, *matrixB_1D, *matrixC_1D, **matrixC, **arreglo, **arreglob, E_cpu;
     char  processor_name[MPI_MAX_PROCESSOR_NAME], nombre[20]; 
     long E_wall;  
     FILE *archivo;
     time_t  ts, te;
     clock_t cs, ce;
+
+
     
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -162,7 +235,6 @@ int main(int argc, char **argv) {
     if(rank == MASTER){   
         ts = time(NULL);
         cs = clock();
-
         if (strcmp(argv[1],"-V") == 0) {       
             strcpy(nombre, "Vertical");
         }
@@ -189,10 +261,7 @@ int main(int argc, char **argv) {
             Matrix2 = FillMatrix(k, n, archivo);
             fclose(archivo);
             
-            Resultado = (float **)calloc(m * k, sizeof(float *));
-            for (i = 0; i < m * k; i = i + 1) {
-                Resultado[i] = (float *)calloc(k * n, sizeof(float));
-            }
+            
             
             // Muestra las matrices si se desean ver
             if (strcmp(argv[2], "-V") == 0) {
@@ -214,6 +283,8 @@ int main(int argc, char **argv) {
                 extra_rowsb = k % (size);
                 datos[0] = rows_per_process;
                 datos[3] = k;
+                partition_type = 0;
+                datos[7] = 0;
                 
                 if (strcmp(argv[2], "-V") == 0) //muestra las Submatrices
                 {
@@ -222,18 +293,18 @@ int main(int argc, char **argv) {
                         start_rowb = o;
                         end_row = p + rows_per_process;
                         end_rowb = o + rows_per_processb;
-                        if(extra_rows > 0 && i == size - 1){             //Caso que no quepan todas las filas en los nodos asignados las que sobren se llevaran al ultimo nodo
+
+                        if(extra_rows > 0 && i == size - 1){             // Caso que no quepan todas las filas de a en los nodos asignados las que sobren se llevaran al ultimo nodo
                             end_row = end_row + extra_rows;
                             rows_per_process = rows_per_process + extra_rows;
                             
                         }
-                        
-                        if(extra_rowsb > 0 && i == size - 1){             //Caso que no quepan todas las filas en los nodos asignados las que sobren se llevaran al ultimo nodo
+                        if(extra_rowsb > 0 && i == size - 1){             // Caso que no quepan todas las filas de b en los nodos asignados las que sobren se llevaran al ultimo nodo
                             end_rowb = end_rowb + extra_rowsb;
                             rows_per_processb = rows_per_processb + extra_rowsb;
                             
                         }
-                        
+
                         arreglo = GetSubMatrix(Matrix1, start_row, 0, end_row, k);
                         arreglob = GetSubMatrix(Matrix2, start_rowb, 0, end_rowb, n);
                         if(strcmp(argv[2], "-V") == 0){
@@ -243,7 +314,7 @@ int main(int argc, char **argv) {
                             else{
                                 printf("\nSubMatrix A en el proceso %d\n", i);
                             }
-                            PrintMatrix(rows_per_process, k, arreglo); //Matrix sent to proccess
+                            PrintMatrix(rows_per_process, k, arreglo); // Imprime las submatrices de A y B enviadas a cada proceso
                             fflush(stdout);
                             if (i == 0){
                                 printf("\nSubMatrix B en el proceso MASTER\n");      
@@ -274,29 +345,54 @@ int main(int argc, char **argv) {
                 datos[6] = n;
                 p = 0;
                 o = 0;
+                num_threads = rows_per_process;
+                pthread_t threads[num_threads];
+                struct data data[num_threads];
+                rt = rows_per_process;
+                ct = k;
+                rbt = rows_per_processb;
+                cbt = n;
+                
                 for (i = 0; i < size; i = i + 1){ 
                     start_row = p;
                     start_rowb = o;
                     end_row = p + rows_per_process;
                     end_rowb = o + rows_per_processb;
 
-                    if(extra_rows > 0 && i == size - 1){             //Caso que no quepan todas las filas en los nodos asignados las que sobren se llevaran al ultimo nodo
+                    if(extra_rows > 0 && i == size - 1){             //Caso que no quepan todas las filas de a en los nodos asignados las que sobren se llevaran al ultimo nodo
                         end_row = end_row + extra_rows;
                         rows_per_process = rows_per_process + extra_rows;
                         datos[0] = rows_per_process;
                     }
                         
-                    if(extra_rowsb > 0 && i == size - 1){             //Caso que no quepan todas las filas en los nodos asignados las que sobren se llevaran al ultimo nodo
+                    if(extra_rowsb > 0 && i == size - 1){             //Caso que no quepan todas las filas de b en los nodos asignados las que sobren se llevaran al ultimo nodo
                         end_rowb = end_rowb + extra_rowsb;
                         rows_per_processb = rows_per_processb + extra_rowsb;
                         datos[1] = rows_per_processb;
                     }
                     arreglo = GetSubMatrix(Matrix1, start_row, 0, end_row, k);
                     arreglob = GetSubMatrix(Matrix2, start_rowb, 0, end_rowb, n);
-                    
+                    Resultado = (float **)calloc(rows_per_process * rows_per_processb, sizeof(float *));
+                    for (ii = 0; ii < rows_per_process * rows_per_processb; ii = ii + 1) {
+                        Resultado[ii] = (float *)calloc(k * n, sizeof(float));
+                    }
                     if (i == 0){
+                       if (rows_per_process > 1){
+                            Matrix1t = arreglo;
+                            Matrix2t = arreglob;
+                            for ( j = 0; j < num_threads; j = j + 1) {      //Se crean hilos en funcion al numero de hebras predefinido por la cantidad de filas 
+                                data[j].id = j;
+                                pthread_create(&threads[j], NULL, tensorial_product, &data[j]);
+                            }
+                            for (j = 0; j < num_threads; j = j + 1) {       //Se asegura que terminen todos los hilos su ejecucion.
+                                pthread_join(threads[j], NULL);
+                            }
+                        }
+                        else{
+                            Resultado = Process(arreglo, arreglob, rows_per_process, k, rows_per_processb, n);
+                        }
                         
-                        Resultado = Process(arreglo, arreglob, rows_per_process, k, rows_per_processb, n);
+                        
                         if(strcmp(argv[2], "-V") == 0){
                             PrintMatrix(rows_per_process * rows_per_processb, k * n, Resultado);
                         }                
@@ -305,7 +401,7 @@ int main(int argc, char **argv) {
                         matrixA_1D = Matrix1D(arreglo, rows_per_process, k);
                         matrixB_1D = Matrix1D(arreglob, rows_per_processb,n);
                         // Mandar matrices a los nodos
-                        MPI_Send(datos , 7, MPI_INT, i, i, MPI_COMM_WORLD);
+                        MPI_Send(datos , 8, MPI_INT, i, i, MPI_COMM_WORLD);
                         MPI_Send(matrixA_1D, rows_per_process * k, MPI_FLOAT, i, i, MPI_COMM_WORLD);   //Se envian los datos y las matrices
                         MPI_Send(matrixB_1D , rows_per_processb * n, MPI_FLOAT, i, i , MPI_COMM_WORLD);
                         sentmess = sentmess + 3;
@@ -331,23 +427,38 @@ int main(int argc, char **argv) {
                     end_row = p + rows_per_process;
                     end_rowb = o + rows_per_processb;
                     
-                    MPI_Send(datos, 7, MPI_INT, i, 0, MPI_COMM_WORLD);
+                    MPI_Send(datos, 8, MPI_INT, i, 0, MPI_COMM_WORLD);
                     MPI_Send(matrixB_1D, rows_per_processb * n, MPI_FLOAT, i, 0, MPI_COMM_WORLD);
                     sentmess = sentmess + 2;
                     
-                    if(extra_rowsb > 0 && i == size - 1){             //Caso que no quepan todas las filas en los nodos asignados las que sobren se llevaran al ultimo nodo
+                    if(extra_rowsb > 0 && i == size - 1){             //Caso que no quepan todas las filas de b en los nodos asignados las que sobren se llevaran al ultimo nodo
                         end_rowb = end_rowb + extra_rowsb;
                         rows_per_processb = rows_per_processb + extra_rowsb;
                     }
                     matrixC_1D = (float*) malloc(rows_per_processb * n * sizeof(float));
-                    MPI_Recv(datos , 7, MPI_INT, i, i, MPI_COMM_WORLD, &status); 
+                    MPI_Recv(datos , 8, MPI_INT, i, i, MPI_COMM_WORLD, &status); 
                     MPI_Recv(matrixC_1D, rows_per_processb * n, MPI_FLOAT, i, i, MPI_COMM_WORLD, &status);
                     recvmess = recvmess + 2;
-                    
+                    rt = rows_per_process;
+                    rbt = rows_per_processb;
+                
                     
                     matrixC = Matrix2D(matrixC_1D, rows_per_processb, n);
+                    if (rows_per_process > 1){
+                        Matrix1t = arreglo;
+                        Matrix2t = matrixC;
+                        for ( j = 0; j < num_threads; j = j + 1) {
+                            data[j].id = j;
+                            pthread_create(&threads[j], NULL, tensorial_product, &data[j]);
+                        }
+                        for (j = 0; j < num_threads; j = j + 1) {       //Se asegura que terminen todos los hilos su ejecucion.
+                            pthread_join(threads[j], NULL);
+                        }
+                    }
+                    else{
+                        Resultado = Process(arreglo, matrixC, rows_per_process, k, rows_per_processb, n);
+                    }
                     
-                    Resultado = Process(arreglo, matrixC, rows_per_process, k, rows_per_processb, n);
                     if(strcmp(argv[2], "-V") == 0){
                         PrintMatrix(rows_per_process * rows_per_processb, k * n, Resultado);
                     }
@@ -356,7 +467,8 @@ int main(int argc, char **argv) {
                 }
             }
             else{ //Modo vertical
-                
+                partition_type = 1;
+                datos[7] = 1;
                 colum_per_process = k / (size);
                 colum_per_processb = n / (size);
                 extra_colum = k % (size);
@@ -371,12 +483,12 @@ int main(int argc, char **argv) {
                         start_colb = o;
                         end_col = p + colum_per_process;
                         end_colb = o + colum_per_processb;
-                        if(extra_colum > 0 && i == size - 1){             //Caso que no quepan todas las filas en los nodos asignados las que sobren se llevaran al ultimo nodo
+                        if(extra_colum > 0 && i == size - 1){             //Caso que no quepan todas las columnas de A en los nodos asignados las que sobren se llevaran al ultimo nodo
                             end_col = end_col + extra_colum;
                             colum_per_process = colum_per_process + extra_colum;
                         }
                         
-                        if(extra_columb > 0 && i == size - 1){             //Caso que no quepan todas las filas en los nodos asignados las que sobren se llevaran al ultimo nodo
+                        if(extra_columb > 0 && i == size - 1){             //Caso que no quepan todas las columnas de B en los nodos asignados las que sobren se llevaran al ultimo nodo
                             end_colb = end_colb + extra_columb;
                             colum_per_processb = colum_per_processb + extra_columb;
                         }
@@ -390,7 +502,7 @@ int main(int argc, char **argv) {
                             else{
                                 printf("\nSubMatrix A en el proceso %d\n", i);
                             }
-                            PrintMatrix(m, colum_per_process, arreglo); //Matrix sent to proccess
+                            PrintMatrix(m, colum_per_process, arreglo);     //Imprime las submatrices enviadas a cada proceso
                             fflush(stdout);
                             if (i == 0){
                                 printf("\nSubMatrix B en el proceso MASTER\n");      
@@ -412,6 +524,9 @@ int main(int argc, char **argv) {
                 colum_per_processb = n / (size);
                 extra_colum = k % (size);
                 extra_columb = n % (size);
+                num_threads = colum_per_process;
+                pthread_t threads[num_threads];
+                struct data data[num_threads];
                 p = 0;
                 o = 0;
                 datos[0] = m;
@@ -420,6 +535,10 @@ int main(int argc, char **argv) {
                 datos[2] = colum_per_processb;
                 datos[4] = k;
                 datos[6] = colum_per_processb + extra_columb;
+                rt = m;
+                ct = colum_per_process;
+                rbt = k;
+                cbt = colum_per_processb;
 
                 for (i = 0; i < size; i = i + 1){ 
                     start_col = p;
@@ -427,32 +546,47 @@ int main(int argc, char **argv) {
                     end_col = p + colum_per_process;
                     end_colb = o + colum_per_processb;
 
-                    if(extra_colum > 0 && i == size - 1){             //Caso que no quepan todas las filas en los nodos asignados las que sobren se llevaran al ultimo nodo
+                    if(extra_colum > 0 && i == size - 1){             //Caso que no quepan todas las columnas de a en los nodos asignados las que sobren se llevaran al ultimo nodo
                         end_col = end_col + extra_colum;
                         colum_per_process = colum_per_process + extra_colum;
                         datos[3] = colum_per_process;
                     }
                         
-                    if(extra_columb > 0 && i == size - 1){             //Caso que no quepan todas las filas en los nodos asignados las que sobren se llevaran al ultimo nodo
+                    if(extra_columb > 0 && i == size - 1){             //Caso que no quepan todas las columnas de b en los nodos asignados las que sobren se llevaran al ultimo nodo
                         end_colb = end_colb + extra_columb;
                         colum_per_processb = colum_per_processb + extra_columb;
                         datos[2] = colum_per_processb;
                     }
                     arreglo = GetSubMatrix(Matrix1, 0, start_col, m, end_col);
                     arreglob = GetSubMatrix(Matrix2, 0, start_colb, k, end_colb);
-                    
+                    Resultado = (float **)calloc(m * k, sizeof(float *));
+                        for (ii = 0; ii < m * k; ii = ii + 1) {
+                             Resultado[ii] = (float *)calloc(colum_per_process * colum_per_processb, sizeof(float));
+                        }
                     if (i == 0){
-                        
-                        Resultado = Process(arreglo, arreglob, m, colum_per_process, k, colum_per_processb);
+                        if (colum_per_process > 1){
+                            Matrix1t = arreglo;
+                            Matrix2t = arreglob;
+                            for ( j = 0; j < num_threads; j = j + 1) {      //Se crean hilos en funcion a la cantidad de columnas
+                                data[j].id = j;
+                                pthread_create(&threads[j], NULL, tensorial_product, &data[j]);
+                            }
+                            for (j = 0; j < num_threads; j = j + 1) {       //Se asegura que terminen todos los hilos su ejecucion.
+                                pthread_join(threads[j], NULL);
+                            }
+                        }
+                        else{
+                            Resultado = Process(arreglo, arreglob, m, colum_per_process, k, colum_per_processb);
+                        }
                         if(strcmp(argv[2], "-V") == 0){
                             PrintMatrix(m * k, colum_per_process * colum_per_processb, Resultado);
-                        }                
+                        }              
                     }
                     else{
                         matrixA_1D = Matrix1D(arreglo, m, colum_per_process);
                         matrixB_1D = Matrix1D(arreglob, k, colum_per_processb);
                         // Mandar matrices a los nodos
-                        MPI_Send(datos , 7, MPI_INT, i, i, MPI_COMM_WORLD);
+                        MPI_Send(datos , 8, MPI_INT, i, i, MPI_COMM_WORLD);
                         MPI_Send(matrixA_1D, m * colum_per_process, MPI_FLOAT, i, i, MPI_COMM_WORLD);   //Se envian los datos y las matrices
                         MPI_Send(matrixB_1D , k * colum_per_processb, MPI_FLOAT, i, i , MPI_COMM_WORLD);
                         sentmess = sentmess + 3;
@@ -478,25 +612,37 @@ int main(int argc, char **argv) {
                     end_col = p + colum_per_process;
                     end_colb = o + colum_per_processb;
                     
-                    MPI_Send(datos, 7, MPI_INT, i, 0, MPI_COMM_WORLD);
+                    MPI_Send(datos, 8, MPI_INT, i, 0, MPI_COMM_WORLD);
                     MPI_Send(matrixB_1D, k * colum_per_processb, MPI_FLOAT, i, 0, MPI_COMM_WORLD);
                     sentmess = sentmess + 2;
-                    //printf("mando esto al rank %d\n",i);
-                    //PrintMatrix(k,colum_per_processb,arreglob);
                     
                     if(extra_columb > 0 && i == size - 1){             //Caso que no quepan todas las filas en los nodos asignados las que sobren se llevaran al ultimo nodo
                         end_colb = end_colb + extra_columb;
                         colum_per_processb = colum_per_processb + extra_columb;
                     }
                     matrixC_1D = (float*) malloc(k * colum_per_processb * sizeof(float));
-                    MPI_Recv(datos , 7, MPI_INT, i, i, MPI_COMM_WORLD, &status); 
+                    MPI_Recv(datos , 8, MPI_INT, i, i, MPI_COMM_WORLD, &status); 
                     MPI_Recv(matrixC_1D, k * colum_per_processb, MPI_FLOAT, i, i, MPI_COMM_WORLD, &status);
                     recvmess = recvmess + 2;
-                    
+                    ct = colum_per_process;
+                    cbt = colum_per_processb;
                     
                     matrixC = Matrix2D(matrixC_1D, k, colum_per_processb);
+                    if (colum_per_process > 1){
+                        Matrix1t = arreglo;
+                        Matrix2t = matrixC;
+                        for ( j = 0; j < num_threads; j = j + 1) {
+                            data[j].id = j;
+                            pthread_create(&threads[j], NULL, tensorial_product, &data[j]);
+                        }
+                        for (j = 0; j < num_threads; j = j + 1) {       //Se asegura que terminen todos los hilos su ejecucion.
+                            pthread_join(threads[j], NULL);
+                        }
+                    }
+                    else{
+                        Resultado = Process(arreglo, matrixC, m, colum_per_process, k, colum_per_processb);
+                    }
                     
-                    Resultado = Process(arreglo, matrixC, m, colum_per_process, k, colum_per_processb);
                     if(strcmp(argv[2], "-V") == 0){
                         PrintMatrix(m * k, colum_per_process * colum_per_processb, Resultado);
                     }
@@ -505,14 +651,6 @@ int main(int argc, char **argv) {
                 }
                 
             }
-            // Limpia la memoria utilizada para las matrices
-            free(Matrix1);
-            free(Matrix2);
-            free(matrixA_1D);
-            free(matrixB_1D);
-            free(matrixC_1D);
-            free(Resultado);
-            
             ce = clock();
             te = time(NULL);
             E_wall = (long) (te - ts);
@@ -525,17 +663,21 @@ int main(int argc, char **argv) {
         }
     }
     else{//Procesos 
-        //inicia el contador de tiempo=0;
-        
-        ts = time(NULL);
+        ts = time(NULL); //inicia el contador de tiempo=0;
         cs = clock();
         
-        MPI_Recv(datos , 7, MPI_INT, MASTER , rank , MPI_COMM_WORLD, &status); //Se reciben los datos
+        MPI_Recv(datos , 8, MPI_INT, MASTER , rank , MPI_COMM_WORLD, &status); //Se reciben los datos
         rows_per_process = datos[0];
         rows_per_processb = datos[1];
         colum_per_processb = datos[2];
         colum_per_process = datos[3];
-        matrixA_1D = (float*) malloc(rows_per_process * colum_per_process * sizeof(float));
+        partition_type = datos[7];
+
+        num_threads = rows_per_process;
+        pthread_t threads[num_threads];
+        struct data data[num_threads];
+
+        matrixA_1D = (float*) malloc(rows_per_process * colum_per_process * sizeof(float));    //Se le asigna tamaño a las matrices unidimensionales
         matrixB_1D = (float*) malloc(rows_per_processb * colum_per_processb * sizeof(float));
         matrixC_1D = (float*) malloc(rows_per_processb * colum_per_processb * sizeof(float));
         MPI_Recv(matrixA_1D, rows_per_process*colum_per_process, MPI_FLOAT, MASTER, rank, MPI_COMM_WORLD, &status);  //Se reciben las matrices
@@ -545,14 +687,11 @@ int main(int argc, char **argv) {
         Matrix1 = Matrix2D(matrixA_1D, rows_per_process, colum_per_process);
         Matrix2 = Matrix2D(matrixB_1D, rows_per_processb, colum_per_processb);
 
-        Resultado = (float **)calloc(rows_per_process * rows_per_processb, sizeof(float *));
-        for (i = 0; i < rows_per_process * rows_per_processb; i = i + 1) {
-            Resultado[i] = (float *)calloc(colum_per_process * colum_per_processb, sizeof(float));
-        }
+        
         for  (i = 0; i < size; i = i + 1){
             if(i != rank){
-                MPI_Send(datos, 7, MPI_INT, i, rank, MPI_COMM_WORLD);
-                MPI_Send(matrixB_1D, rows_per_processb * colum_per_processb, MPI_FLOAT, i, rank, MPI_COMM_WORLD);
+                MPI_Send(datos, 8, MPI_INT, i, rank, MPI_COMM_WORLD);
+                MPI_Send(matrixB_1D, rows_per_processb * colum_per_processb, MPI_FLOAT, i, rank, MPI_COMM_WORLD); //Se manda la matriz B a los otros procesos
                 sentmess = sentmess + 2;
              }   
         }
@@ -562,22 +701,65 @@ int main(int argc, char **argv) {
                 rows_per_processb = datos[4];
                 colum_per_processb = datos[6];
             }
+            Resultado = (float **)calloc(rows_per_process * rows_per_processb, sizeof(float *)); //Se le asigna memoria dinamica a la matriz resultado
+            for (ii = 0; ii < rows_per_process * rows_per_processb; ii = ii + 1) {
+                Resultado[ii] = (float *)calloc(colum_per_process * colum_per_processb, sizeof(float));
+            }
+            
             if(i == rank){
-                Resultado = Process(Matrix1, Matrix2, rows_per_process, colum_per_process, rows_per_processb, colum_per_processb);
-                if (datos[5] == 1){
+                rt = rows_per_process;
+                rbt = rows_per_processb;
+                ct = colum_per_process;
+                cbt = colum_per_processb;
+                
+                if (rows_per_process > 1 && partition_type == 0 || colum_per_process > 1 && partition_type == 1){ //Se entra a los hilos
+                    Matrix1t = Matrix1;
+                    Matrix2t = Matrix2;
+                    for ( j = 0; j < num_threads; j = j + 1) {
+                        data[j].id = j;
+                        pthread_create(&threads[j], NULL, tensorial_product, &data[j]);
+                    }
+                    for (j = 0; j < num_threads; j = j + 1) {       //Se asegura que terminen todos los hilos su ejecucion.
+                        pthread_join(threads[j], NULL);
+                    }
+                        }
+                else{
+                    Resultado = Process(Matrix1, Matrix2, rows_per_process, colum_per_process, rows_per_processb, colum_per_processb);
+                }
+
+                if (datos[5] == 1){   //Si es verboso imprimir la matriz
                     PrintMatrix(rows_per_process * rows_per_processb, colum_per_process * colum_per_processb, Resultado);
                 }
             }
             else{    
-                MPI_Recv(datos , 7, MPI_INT, i, i , MPI_COMM_WORLD, &status); 
+                MPI_Recv(datos , 8, MPI_INT, i, i , MPI_COMM_WORLD, &status); 
                 rows_per_processb = datos[1];
                 colum_per_processb = datos[2];
                 matrixC_1D = (float*) malloc(rows_per_processb * colum_per_processb * sizeof(float));
                 MPI_Recv(matrixC_1D, rows_per_processb * colum_per_processb , MPI_FLOAT, i, i , MPI_COMM_WORLD, &status);
                 recvmess = recvmess + 2;
+                rt = rows_per_process;
+                rbt = rows_per_processb;
+                ct = colum_per_process;
+                cbt = colum_per_processb;
                 
                 matrixC = Matrix2D(matrixC_1D, rows_per_processb, colum_per_processb);
-                Resultado = Process(Matrix1, matrixC, rows_per_process, colum_per_process, rows_per_processb, colum_per_processb);
+
+                if (rows_per_process > 1 && partition_type == 0 || colum_per_process > 1 && partition_type == 1){
+                    Matrix1t = Matrix1; //   Se actualizan los valores de las matrices globales para que puedan trabajar los hilos
+                    Matrix2t = matrixC;
+                    for ( j = 0; j < num_threads; j = j + 1) {  
+                        data[j].id = j;
+                        pthread_create(&threads[j], NULL, tensorial_product, &data[j]);
+                    }
+                    for (j = 0; j < num_threads; j = j + 1) {       //Se asegura que terminen todos los hilos su ejecucion.
+                        pthread_join(threads[j], NULL);
+                    }
+                        }
+                else{
+                    Resultado = Process(Matrix1, matrixC, rows_per_process, colum_per_process, rows_per_processb, colum_per_processb);
+                }
+
                 if (datos[5] == 1){
                     PrintMatrix(rows_per_process * rows_per_processb, colum_per_process * colum_per_processb, Resultado);
                 }
@@ -590,12 +772,11 @@ int main(int argc, char **argv) {
         ce = clock();
         te = time(NULL);
         E_wall = (long) (te - ts);
-        E_cpu = (float)(ce - cs) / CLOCKS_PER_SEC;
-        //Termina el contador y se muestra tiempo en pantalla
+        E_cpu = (float)(ce - cs) / CLOCKS_PER_SEC;  //Termina el contador y se muestra tiempo en pantalla.
        
-        MPI_Barrier( MPI_COMM_WORLD);                                   //Barrera para que no se impriman los tiempos en medio de los resultados
+        MPI_Barrier( MPI_COMM_WORLD);               //Barrera para que no se impriman los tiempos en medio de los resultados.
         printf("\nFrom %d - Elapsed CPU Time %f Wall Time %ld \n\t Sent Mess: %d, Recv Mess: %d \n",rank, E_cpu, E_wall, sentmess, recvmess); 
-        free(Matrix1);
+        free(Matrix1);  //Se libera la memoria de las matrices
         free(Matrix2);
         free(matrixC);
         free(matrixA_1D);
